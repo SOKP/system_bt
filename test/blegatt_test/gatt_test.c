@@ -45,6 +45,7 @@
 //#include <time.h>
 #include "bt_target.h"
 #include "l2c_api.h"
+#include "bta_api.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -78,7 +79,6 @@
 #endif
 
 #define PID_FILE "/data/.bdt_pid"
-#define DEVICE_DISCOVERY_TIMEOUT 20
 
 #ifndef MAX
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
@@ -463,7 +463,7 @@ static void bdt_shutdown(void)
 static void config_permissions(void)
 {
     struct __user_cap_header_struct header;
-    struct __user_cap_data_struct cap;
+    struct __user_cap_data_struct cap[2];
 
     bdt_log("set_aid_and_cap : pid %d, uid %d gid %d", getpid(), getuid(), getgid());
 
@@ -474,17 +474,25 @@ static void config_permissions(void)
     setuid(AID_BLUETOOTH);
     setgid(AID_BLUETOOTH);
 
-    header.version = _LINUX_CAPABILITY_VERSION;
+    header.version = _LINUX_CAPABILITY_VERSION_3;
 
-    cap.effective = cap.permitted =  cap.inheritable =
-                    1 << CAP_NET_RAW |
-                    1 << CAP_NET_ADMIN |
-                    1 << CAP_NET_BIND_SERVICE |
-                    1 << CAP_SYS_RAWIO |
-                    1 << CAP_SYS_NICE |
-                    1 << CAP_SETGID;
+    cap[CAP_TO_INDEX(CAP_NET_RAW)].permitted |= CAP_TO_MASK(CAP_NET_RAW);
+    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].permitted |= CAP_TO_MASK(CAP_NET_ADMIN);
+    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].permitted |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
+    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].permitted |= CAP_TO_MASK(CAP_SYS_RAWIO);
+    cap[CAP_TO_INDEX(CAP_SYS_NICE)].permitted |= CAP_TO_MASK(CAP_SYS_NICE);
+    cap[CAP_TO_INDEX(CAP_SETGID)].permitted |= CAP_TO_MASK(CAP_SETGID);
+    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].permitted |= CAP_TO_MASK(CAP_WAKE_ALARM);
 
-    capset(&header, &cap);
+    cap[CAP_TO_INDEX(CAP_NET_RAW)].effective |= CAP_TO_MASK(CAP_NET_RAW);
+    cap[CAP_TO_INDEX(CAP_NET_ADMIN)].effective |= CAP_TO_MASK(CAP_NET_ADMIN);
+    cap[CAP_TO_INDEX(CAP_NET_BIND_SERVICE)].effective |= CAP_TO_MASK(CAP_NET_BIND_SERVICE);
+    cap[CAP_TO_INDEX(CAP_SYS_RAWIO)].effective |= CAP_TO_MASK(CAP_SYS_RAWIO);
+    cap[CAP_TO_INDEX(CAP_SYS_NICE)].effective |= CAP_TO_MASK(CAP_SYS_NICE);
+    cap[CAP_TO_INDEX(CAP_SETGID)].effective |= CAP_TO_MASK(CAP_SETGID);
+    cap[CAP_TO_INDEX(CAP_WAKE_ALARM)].effective |= CAP_TO_MASK(CAP_WAKE_ALARM);
+
+    capset(&header, &cap[0]);
     setgroups(sizeof(groups)/sizeof(groups[0]), groups);
 }
 
@@ -737,13 +745,16 @@ static int create_cmdjob(char *cmd)
     char *job_cmd;
 
     job_cmd = malloc(strlen(cmd)+1); /* freed in job handler */
-    strlcpy(job_cmd, cmd,(strlen(cmd)+1));
-
-    if (pthread_create(&thread_id, NULL,
+    if (job_cmd) {
+       strlcpy(job_cmd, cmd,(strlen(cmd)+1));
+      if (pthread_create(&thread_id, NULL,
                        (void*)cmdjob_handler, (void*)job_cmd)!=0)
-      perror("pthread_create");
-
-    return 0;
+         perror("pthread_create");
+      return 0;
+    }
+    else
+       perror("create_Cmdjob malloc failed ");
+    return -1;
 }
 
 /*******************************************************************************
@@ -1458,9 +1469,15 @@ void do_le_client_disconnect (char *p)
 {
     bt_status_t        Ret;
     bt_bdaddr_t bd_addr = {{0}};
+    int transport = BT_TRANSPORT_BR_EDR;
+    transport = get_int(&p, -1);
     if(FALSE == GetBdAddr(p, &bd_addr))    return;
 
-    if(Btif_gatt_layer)
+    if(transport == BT_TRANSPORT_BR_EDR)
+    {
+        Ret = sL2capInterface->DisconnectReq(g_lcid);
+    }
+    else if(Btif_gatt_layer)
     {
         Ret = sGattIfaceScan->client->disconnect(g_client_if_scan, &bd_addr, g_conn_id);
     }
@@ -1485,11 +1502,25 @@ void do_le_client_scan_stop (char *p)
     printf("%s:: Ret=%d \n", __FUNCTION__,Ret );
 }
 
+void do_le_client_listen_start (char *p)
+{
+    bt_status_t        Ret;
+    Ret = sGattIfaceScan->client->listen(g_client_if_scan,TRUE);
+    printf("%s:: Ret=%d \n", __FUNCTION__,Ret );
+}
+
+void do_le_client_listen_stop (char *p)
+{
+    bt_status_t        Ret;
+    Ret = sGattIfaceScan->client->listen(g_client_if_scan,FALSE);
+    printf("%s:: Ret=%d \n", __FUNCTION__,Ret );
+}
+
 void do_le_client_set_adv_data(char *p)
 {
     bt_status_t        Ret;
     bool              SetScanRsp        = FALSE;
-    bool              IncludeName        = FALSE;
+    bool              IncludeName        = TRUE;
     bool              IncludeTxPower    = FALSE;
     int               min_conn_interval = 100;
     int               max_conn_interval = 1000;
@@ -1503,6 +1534,17 @@ void do_le_client_set_adv_data(char *p)
     //To start with we are going with hard-code values.
     Ret = sGattIfaceScan->client->set_adv_data(/*g_server_if*/ g_server_if_scan /*g_client_if_scan*/, SetScanRsp, IncludeName, IncludeTxPower, min_conn_interval, max_conn_interval, 0,8, "QUALCOMM", 0, NULL,0,NULL);
     printf("%s:: Ret=%d \n", __FUNCTION__,Ret );
+}
+void do_le_client_set_adv_mode(char *p)
+{
+    tBTA_DM_DISC disc_mode;
+    tBTA_DM_CONN conn_mode;
+
+    disc_mode = get_int(&p,-1);
+    conn_mode = get_int(&p,-1);
+    printf("%s:: discoverable  mode=%d  connectable _mode=%d \n", __FUNCTION__,disc_mode,conn_mode );
+    sGattInterface->cSetVisibility(disc_mode,conn_mode);
+
 }
 
 void do_le_client_multi_adv_set_inst_data(char *p)
@@ -2172,7 +2214,11 @@ const t_cmd console_cmd_list[] =
     { "c_execute_write", do_le_execute_write, "is_execute", 0 },
     { "c_scan_start", do_le_client_scan_start, "::", 0 },
     { "c_scan_stop", do_le_client_scan_stop, "::", 0 },
-    { "c_set_adv_data", do_le_client_multi_adv_set_inst_data, "::EnableScanrsp<0/1>, IncludeName<0/1> IncludeTxPower<0/1>", 0 },
+    { "c_listen_start", do_le_client_listen_start, "::", 0 },
+    { "c_listen_stop", do_le_client_listen_stop, "::", 0 },
+    { "c_set_adv_mode", do_le_client_set_adv_mode, ":: Discoverability mode,Connectable_mode,", 0 },
+    { "c_set_adv_data", do_le_client_set_adv_data, "::EnableScanrsp<0/1>, IncludeName<0/1> IncludeTxPower<0/1>,min_conn_interval,int  max_conn_interval", 0 },
+    { "c_set_multi_adv_data", do_le_client_multi_adv_set_inst_data, "::EnableScanrsp<0/1>, IncludeName<0/1> IncludeTxPower<0/1>", 0 },
     { "start_advertising", do_le_client_adv_enable, "::int client_if,int min_interval,int max_interval,int adv_type,int chnl_map, int tx_power timeout",0},
     { "c_adv_update", do_le_client_adv_update, "::int client_if, int min_interval,int max_interval,int adv_type,int chnl_map, int tx_power, int timeout",0},
     { "stop_advertising", do_le_client_adv_disable, "::int adv_if",0},

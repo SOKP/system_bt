@@ -32,13 +32,13 @@
 
 #include <hardware/bluetooth.h>
 
-
 #define LOG_NDDEBUG 0
 #define LOG_TAG "bluedroid"
 
 #include "btif_api.h"
 #include "bt_utils.h"
 #include "gatt_api.h"
+#include "bta_api.h"
 
 #ifdef TEST_APP_INTERFACE
 #include <bt_testapp.h>
@@ -74,7 +74,7 @@ void Gatt_StartIf(tGATT_IF gatt_if)
 BOOLEAN Gatt_Connect (tGATT_IF gatt_if, BD_ADDR bd_addr, BOOLEAN is_direct,tBT_TRANSPORT transport)
 {
     BOOLEAN     Ret = 0;
-    Ret = GATT_Connect(gatt_if, bd_addr, is_direct,BT_TRANSPORT_LE);
+    Ret = GATT_Connect(gatt_if, bd_addr, is_direct,BT_TRANSPORT_LE, false);
     printf("%s::Ret=%d,gatt_if=%d, is_direct=%d \n", __FUNCTION__, Ret, gatt_if, is_direct);
     return Ret;
 }
@@ -145,11 +145,12 @@ BOOLEAN Gatt_Listen (tGATT_IF gatt_if, BOOLEAN start, BD_ADDR_PTR bd_addr)
         GATT_SetIdleTimeout (bd_addr, idle_tout,BT_TRANSPORT_LE);
         printf("%s::\n", __FUNCTION__);
     }
-/*    void Gatt_SetLeAdvParams (BD_ADDR bd_addr, UINT16 idle_tout)
+
+    void Gatt_SetLeAdvMode (tBTA_DM_DISC disc_mode, tBTA_DM_CONN conn_mode)
     {
-        GATT_SetIdleTimeout (bd_addr, idle_tout,BT_TRANSPORT_LE);
-        printf("%s::\n", __FUNCTION__);
-    }*/
+        printf("%s::call set Visibility\n", __FUNCTION__);
+        BTA_DmSetVisibility(disc_mode, conn_mode, BTA_DM_IGNORE, BTA_DM_IGNORE);
+    }
 
 static const btgatt_test_interface_t    btgatt_testInterface =
 {
@@ -166,7 +167,8 @@ static const btgatt_test_interface_t    btgatt_testInterface =
     Gatt_Write,
     Gatt_ExecuteWrite,
     Gatt_SendHandleValueConfirm,
-    Gatt_SetIdleTimeout
+    Gatt_SetIdleTimeout,
+    Gatt_SetLeAdvMode
 
 };
 

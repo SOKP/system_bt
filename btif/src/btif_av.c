@@ -51,6 +51,7 @@
 /* Now supports Two AV connections. */
 #define BTIF_AV_NUM_CB       2
 #define HANDLE_TO_INDEX(x) ((x & BTA_AV_HNDL_MSK) - 1)
+#define INVALID_INDEX        -1
 
 typedef enum {
     BTIF_AV_STATE_IDLE = 0x0,
@@ -116,12 +117,14 @@ typedef struct
     BOOLEAN sbc_offload;
     BOOLEAN aptx_offload;
     BOOLEAN aac_offload;
+    BOOLEAN aptxhd_offload;
 } btif_av_a2dp_offloaded_codec_cap_t;
 
 typedef enum {
     SBC,
     APTX,
     AAC,
+    APTXHD,
 }btif_av_codec_list;
 
 /*****************************************************************************
@@ -225,7 +228,7 @@ void btif_av_update_multicast_state(int index);
 BOOLEAN btif_av_get_ongoing_multicast();
 tBTA_AV_HNDL btif_av_get_playing_device_hdl();
 tBTA_AV_HNDL btif_av_get_av_hdl_from_idx(UINT8 idx);
-UINT8 btif_av_get_other_connected_idx(int current_index);
+int btif_av_get_other_connected_idx(int current_index);
 #ifdef BTA_AV_SPLIT_A2DP_ENABLED
 BOOLEAN btif_av_is_codec_offload_supported(int codec);
 int btif_av_get_current_playing_dev_idx();
@@ -298,6 +301,7 @@ const char *dump_av_codec_name(btif_av_codec_list codec)
         CASE_RETURN_STR(SBC)
         CASE_RETURN_STR(APTX)
         CASE_RETURN_STR(AAC)
+        CASE_RETURN_STR(APTXHD)
         default: return "UNKNOWN_CODEC";
     }
 }
@@ -774,11 +778,20 @@ static BOOLEAN btif_av_state_opening_handler(btif_sm_event_t event, void *p_data
                 if ((btif_rc_get_connected_peer(peer_addr))
                     &&(!bdcmp(btif_av_cb[index].peer_bda.address, peer_addr)))
                 {
-                    /* Disconnect AVRCP connection, if A2DP
-                     * conneciton failed, for any reason
+                    /* Do not disconnect AVRCP connection if A2DP
+                     * connection failed due to SDP failure since remote
+                     * may not support A2DP. In such case we will keep
+                     * AVRCP only connection.
                      */
-                    BTIF_TRACE_WARNING(" Disconnecting AVRCP ");
-                    BTA_AvCloseRc(btif_rc_get_connected_peer_handle(peer_addr));
+                    if (p_bta_data->open.status != BTA_AV_FAIL_SDP)
+                    {
+                        BTIF_TRACE_WARNING("Disconnecting AVRCP ");
+                        BTA_AvCloseRc(btif_rc_get_connected_peer_handle(peer_addr));
+                    }
+                    else
+                    {
+                        BTIF_TRACE_WARNING("Keep AVRCP only connection");
+                    }
                 }
                 state = BTAV_CONNECTION_STATE_DISCONNECTED;
                 av_state  = BTIF_AV_STATE_IDLE;
@@ -1074,7 +1087,6 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data,
             break;
 
         case BTIF_SM_EXIT_EVT:
-            btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
             break;
 
         case BTIF_AV_START_STREAM_REQ_EVT:
@@ -1210,18 +1222,6 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data,
                 }
             }
 
-            /*  In case peer is A2DP SRC we do not want to ack commands on UIPC*/
-            if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
-            {
-                if (btif_a2dp_on_started(&p_av->start,
-                    ((btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) != 0),
-                      btif_av_cb[index].bta_handle))
-                {
-                    /* only clear pending flag after acknowledgement */
-                    btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
-                }
-            }
-
             /* remain in open state if status failed */
             /* Multicast-soft Handoff:
              * START failed, cleanup Handoff flag.
@@ -1230,6 +1230,18 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data,
             {
                 int i;
 
+                /* In case peer is A2DP SRC we do not want to ack commands on UIPC */
+                if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
+                {
+                    if (btif_a2dp_on_started(&p_av->start,
+                        ((btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) != 0),
+                        btif_av_cb[index].bta_handle))
+                    {
+                        /* only clear pending flag after acknowledgement */
+                        btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
+                    }
+                }
+                /* Clear dual handoff flag */
                 for (i = 0; i < btif_max_av_clients; i++)
                 {
                     btif_av_cb[i].dual_handoff = FALSE;
@@ -1244,12 +1256,6 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data,
             }
 #endif
 
-            /* change state to started, send acknowledgement if start is pending */
-            if (btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) {
-                if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
-                    btif_a2dp_on_started(NULL, TRUE, btif_av_cb[index].bta_handle);
-                /* pending start flag will be cleared when exit current state */
-            }
             btif_sm_change_state(btif_av_cb[index].sm_handle, BTIF_AV_STATE_STARTED);
 
         } break;
@@ -1291,7 +1297,7 @@ static BOOLEAN btif_av_state_opened_handler(btif_sm_event_t event, void *p_data,
             /* change state to idle, send acknowledgement if start is pending */
             if (btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) {
                 btif_a2dp_ack_fail();
-                /* pending start flag will be cleared when exit current state */
+                btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
             }
 
             btif_sm_change_state(btif_av_cb[index].sm_handle, BTIF_AV_STATE_IDLE);
@@ -1367,6 +1373,25 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
     switch (event)
     {
         case BTIF_SM_ENTER_EVT:
+            /*Ack from entry point of started handler instead of open state to avoid race condition*/
+            if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
+            {
+                if (btif_a2dp_on_started(&p_av->start,
+                    ((btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) != 0),
+                      btif_av_cb[index].bta_handle))
+                {
+                    /* only clear pending flag after acknowledgement */
+                    btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
+                }
+            }
+
+            /* Already changed state to started, send acknowledgement if start is pending */
+            if (btif_av_cb[index].flags & BTIF_AV_FLAG_PENDING_START) {
+                if (btif_av_cb[index].peer_sep == AVDT_TSEP_SNK)
+                    btif_a2dp_on_started(NULL, TRUE, btif_av_cb[index].bta_handle);
+                btif_av_cb[index].flags &= ~BTIF_AV_FLAG_PENDING_START;
+            }
+
             /* we are again in started state, clear any remote suspend flags */
             btif_av_cb[index].flags &= ~BTIF_AV_FLAG_REMOTE_SUSPEND;
 
@@ -1475,9 +1500,14 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
                 btif_av_is_connected_on_other_idx(index))
             {
                 BTIF_TRACE_DEBUG("%s: Notify framework to reconfig",__func__);
-                uint8_t idx = btif_av_get_other_connected_idx(index);
-                HAL_CBACK(bt_av_src_callbacks, reconfig_a2dp_trigger_cb, 1,
-                                                &(btif_av_cb[idx].peer_bda));
+                int idx = btif_av_get_other_connected_idx(index);
+                /* Fix for below Klockwork Issue
+                 * Array 'btif_av_cb' of size 2 may use index value(s) -1 */
+                if (idx != INVALID_INDEX)
+                {
+                    HAL_CBACK(bt_av_src_callbacks, reconfig_a2dp_trigger_cb, 1,
+                                                    &(btif_av_cb[idx].peer_bda));
+                }
             }
             break;
 
@@ -1572,7 +1602,9 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
                 if (enable_multicast == FALSE)
                 {
                     APPL_TRACE_WARNING("other Idx is connected, move to SUSPENDED");
-                    btif_rc_send_pause_command();
+                    if (!bt_split_a2dp_enabled) {
+                        btif_rc_send_pause_command();
+                    }
                     btif_a2dp_on_stopped(&p_av->suspend);
                 }
             }
@@ -1588,6 +1620,23 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
             /* if stop was successful, change state to open */
             if (p_av->suspend.status == BTA_AV_SUCCESS)
                 btif_sm_change_state(btif_av_cb[index].sm_handle, BTIF_AV_STATE_OPENED);
+
+            if (bt_split_a2dp_enabled &&
+                btif_av_is_connected_on_other_idx(index))
+            {
+               /*Fake handoff state to switch streaming to other coddeced
+                  device */
+                btif_av_cb[index].dual_handoff = TRUE;
+                BTIF_TRACE_DEBUG("%s: Notify framework to reconfig",__func__);
+                int idx = btif_av_get_other_connected_idx(index);
+                /* Fix for below Klockwork Issue
+                 * Array 'btif_av_cb' of size 2 may use index value(s) -1 */
+                if (idx != INVALID_INDEX)
+                {
+                    HAL_CBACK(bt_av_src_callbacks, reconfig_a2dp_trigger_cb, 1,
+                                                    &(btif_av_cb[idx].peer_bda));
+                }
+            }
 
             break;
 
@@ -1628,7 +1677,6 @@ static BOOLEAN btif_av_state_started_handler(btif_sm_event_t event, void *p_data
     }
     return TRUE;
 }
-
 
 void btif_av_event_deep_copy(UINT16 event, char *p_dest, char *p_src)
 {
@@ -2220,8 +2268,10 @@ static void bte_av_media_callback(tBTA_AV_EVT event, tBTA_AV_MEDIA *p_data)
 static void a2dp_offload_codec_cap_parser(const char *value)
 {
     char *tok = NULL;
-
-    tok = strtok((char*)value,"-");
+    char *tmp_token = NULL;
+    /* Fix for below Klockwork Issue
+     * 'strtok' has been deprecated; replace it with a safe function. */
+    tok = strtok_r((char*)value, "-", &tmp_token);
     while (tok != NULL)
     {
         if (strcmp(tok,"sbc") == 0)
@@ -2239,7 +2289,12 @@ static void a2dp_offload_codec_cap_parser(const char *value)
             BTIF_TRACE_ERROR("%s: AAC offload supported",__func__);
             btif_av_codec_offload.aac_offload = TRUE;
         }
-        tok = strtok(NULL,"-");
+        else if (strcmp(tok,"aptxhd") == 0)
+        {
+            BTIF_TRACE_ERROR("%s: APTXHD offload supported",__func__);
+            btif_av_codec_offload.aptxhd_offload = TRUE;
+        }
+        tok = strtok_r(NULL, "-", &tmp_token);
     };
 }
 
@@ -2478,7 +2533,9 @@ void btif_av_trigger_dual_handoff(BOOLEAN handoff, BD_ADDR address)
     {
         btif_media_send_reset_vendor_state();
         next_idx = btif_av_get_other_connected_idx(index);
-        if (next_idx != btif_max_av_clients)
+        /* Fix for below Klockwork Issue
+        Array 'btif_av_cb' of size 2 may use index value(s) -1 */
+        if (next_idx != INVALID_INDEX && next_idx != btif_max_av_clients)
         {
             HAL_CBACK(bt_av_src_callbacks, reconfig_a2dp_trigger_cb, 1,
                                     &(btif_av_cb[next_idx].peer_bda));
@@ -2890,13 +2947,14 @@ void btif_dispatch_sm_event(btif_av_sm_event_t event, void *p_data, int len)
 *******************************************************************************/
 bt_status_t btif_av_execute_service(BOOLEAN b_enable)
 {
-     int i;
-     BTIF_TRACE_IMP("%s: enable: %d", __FUNCTION__, b_enable);
-     if (b_enable)
-     {
-         /* TODO: Removed BTA_SEC_AUTHORIZE since the Java/App does not
-          * handle this request in order to allow incoming connections to succeed.
-          * We need to put this back once support for this is added */
+    int i;
+    btif_sm_state_t state;
+    BTIF_TRACE_IMP("%s: enable: %d", __FUNCTION__, b_enable);
+    if (b_enable)
+    {
+        /* TODO: Removed BTA_SEC_AUTHORIZE since the Java/App does not
+        * handle this request in order to allow incoming connections to succeed.
+        * We need to put this back once support for this is added */
 
         /* Added BTA_AV_FEAT_NO_SCO_SSPD - this ensures that the BTA does not
         * auto-suspend av streaming on AG events(SCO or Call). The suspend shall
@@ -2921,6 +2979,7 @@ bt_status_t btif_av_execute_service(BOOLEAN b_enable)
             BTA_AvRegister(BTA_AV_CHNL_AUDIO, BTIF_AV_SERVICE_NAME, 0, bte_av_media_callback,
             UUID_SERVCLASS_AUDIO_SOURCE);
         }
+        BTA_AvUpdateMaxAVClient(btif_max_av_clients);
     }
     else
     {
@@ -2929,7 +2988,13 @@ bt_status_t btif_av_execute_service(BOOLEAN b_enable)
         {
             if (btif_av_cb[i].sm_handle != NULL)
             {
-                BTIF_TRACE_IMP("%s: shutting down AV SM", __FUNCTION__);
+                state = btif_sm_get_state(btif_av_cb[i].sm_handle);
+                if(state==BTIF_AV_STATE_OPENING)
+                {
+                    BTIF_TRACE_DEBUG("Moving State from Opening to Idle due to BT ShutDown");
+                    btif_sm_change_state(btif_av_cb[i].sm_handle, BTIF_AV_STATE_IDLE);
+                    btif_queue_advance();
+                }
                 btif_sm_shutdown(btif_av_cb[i].sm_handle);
                 btif_av_cb[i].sm_handle = NULL;
             }
@@ -2955,6 +3020,9 @@ bt_status_t btif_av_execute_service(BOOLEAN b_enable)
 *******************************************************************************/
 bt_status_t btif_av_sink_execute_service(BOOLEAN b_enable)
 {
+     int i;
+     BTIF_TRACE_IMP("%s: enable: %d", __FUNCTION__, b_enable);
+
      if (b_enable)
      {
          /* Added BTA_AV_FEAT_NO_SCO_SSPD - this ensures that the BTA does not
@@ -2968,9 +3036,20 @@ bt_status_t btif_av_sink_execute_service(BOOLEAN b_enable)
                                                                 UUID_SERVCLASS_AUDIO_SINK);
      }
      else {
-         BTA_AvDeregister(btif_av_cb[0].bta_handle);
-         BTA_AvDisable();
+         /* Also shut down the AV state machine */
+        for (i = 0; i < btif_max_av_clients; i++ )
+        {
+            if (btif_av_cb[i].sm_handle != NULL)
+            {
+                BTIF_TRACE_IMP("%s: shutting down AV SM", __FUNCTION__);
+                btif_sm_shutdown(btif_av_cb[i].sm_handle);
+                btif_av_cb[i].sm_handle = NULL;
+            }
+        }
+        BTA_AvDeregister(btif_av_cb[0].bta_handle);
+        BTA_AvDisable();
      }
+     BTIF_TRACE_IMP("%s: enable: %d completed", __FUNCTION__, b_enable);
      return BT_STATUS_SUCCESS;
 }
 
@@ -3065,7 +3144,7 @@ BOOLEAN btif_av_is_connected_on_other_idx(int current_index)
 ** Returns          BOOLEAN
 **
 *******************************************************************************/
-UINT8 btif_av_get_other_connected_idx(int current_index)
+int btif_av_get_other_connected_idx(int current_index)
 {
     //return true if other IDx is connected
     btif_sm_state_t state = BTIF_AV_STATE_IDLE;
@@ -3080,7 +3159,7 @@ UINT8 btif_av_get_other_connected_idx(int current_index)
                 return i;
         }
     }
-    return -1;
+    return INVALID_INDEX;
 }
 
 /*******************************************************************************
@@ -3459,6 +3538,32 @@ BOOLEAN btif_av_get_ongoing_multicast()
     }
 }
 
+/******************************************************************************
+**
+** Function        btif_av_is_multicast_supported
+**
+** Description     Returns TRUE if multicast is supported
+**
+** Returns         BOOLEAN
+******************************************************************************/
+BOOLEAN btif_av_is_multicast_supported()
+{
+    return is_multicast_supported;
+}
+
+/******************************************************************************
+**
+** Function        btif_av_is_offload_supported
+**
+** Description     Returns split mode status
+**
+** Returns         TRUE if split mode is enabled, FALSE otherwise
+********************************************************************************/
+BOOLEAN btif_av_is_offload_supported()
+{
+    return bt_split_a2dp_enabled;
+}
+
 #ifdef BTA_AV_SPLIT_A2DP_ENABLED
 int btif_av_get_current_playing_dev_idx(void)
 {
@@ -3587,10 +3692,13 @@ BOOLEAN btif_av_is_codec_offload_supported(int codec)
         case AAC:
             ret = btif_av_codec_offload.aac_offload;
             break;
+        case APTXHD:
+            ret = btif_av_codec_offload.aptxhd_offload;
+            break;
         default:
             ret = FALSE;
     }
-    BTIF_TRACE_DEBUG("btif_av_is_codec_offload_supported %s code supported = %d",dump_av_codec_name(codec),ret);
+    BTIF_TRACE_DEBUG("btif_av_is_codec_offload_supported %s codec supported = %d",dump_av_codec_name(codec),ret);
     return ret;
 }
 

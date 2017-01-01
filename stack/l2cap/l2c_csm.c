@@ -238,7 +238,7 @@ Event uninit_use_in_call: Using uninitialized value "settings.min" in call to fu
         p_ccb->chnl_state = CST_W4_L2CAP_CONNECT_RSP;
 
         /* Wait for the info resp in this state before sending connect req (if needed) */
-        if ((!p_ccb->p_lcb->w4_info_rsp) || (BT_PSM_SDP == p_ccb->p_rcb->psm))
+        if (!p_ccb->p_lcb->w4_info_rsp)
         {
             /* Need to have at least one compatible channel to continue */
             if (!l2c_fcr_chk_chan_modes(p_ccb))
@@ -1150,7 +1150,7 @@ static void l2c_csm_open (tL2C_CCB *p_ccb, UINT16 event, void *p_data)
         tempstate = p_ccb->chnl_state;
         tempcfgdone = p_ccb->config_done;
         p_ccb->chnl_state = CST_CONFIG;
-        p_ccb->config_done &= ~CFG_DONE_MASK;
+        p_ccb->config_done &= ~IB_CFG_DONE;
 
         alarm_set_on_queue(p_ccb->l2c_ccb_timer,
                            L2CAP_CHNL_CFG_TIMEOUT_MS,

@@ -10,18 +10,21 @@ else
 endif
 
 ifeq ($(TARGET_BUILD_VARIANT),userdebug)
-ifneq ($(BOARD_HAS_QCA_BT_ROME),true)
-bdroid_CFLAGS += -DQLOGKIT_USERDEBUG
-endif
+bluetooth_CFLAGS += -DQLOGKIT_USERDEBUG
 endif
 
 ifneq ($(BOARD_BLUETOOTH_BDROID_HCILP_INCLUDED),)
   bluetooth_CFLAGS += -DHCILP_INCLUDED=$(BOARD_BLUETOOTH_BDROID_HCILP_INCLUDED)
 endif
 
-ifeq ($(TARGET_BUILD_VARIANT),eng)
+ifneq ($(TARGET_BUILD_VARIANT),user)
 bluetooth_CFLAGS += -DBLUEDROID_DEBUG
+endif
+
 bluetooth_CFLAGS += -DUSE_AUDIO_TRACK
+
+ifeq ($(BOARD_USES_WIPOWER),true)
+bluetooth_CFLAGS += -DWIPOWER_SUPPORTED
 endif
 
 bluetooth_CFLAGS += -DEXPORT_SYMBOL="__attribute__((visibility(\"default\")))"

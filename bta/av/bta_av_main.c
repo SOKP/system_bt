@@ -34,6 +34,7 @@
 
 #include "bt_target.h"
 #include "osi/include/log.h"
+#include <cutils/properties.h>
 
 #if defined(BTA_AV_INCLUDED) && (BTA_AV_INCLUDED == TRUE)
 #include "bta_av_co.h"
@@ -48,6 +49,7 @@
 #endif
 
 #include "a2d_aptx.h"
+#include "a2d_aptx_hd.h"
 
 /*****************************************************************************
 ** Constants and types
@@ -72,6 +74,14 @@
 #ifndef BTA_AV_RS_TIME_VAL
 #define BTA_AV_RS_TIME_VAL     1000
 #endif
+
+/* offload codecs support */
+enum
+{
+    APTX = 1,
+    AAC,
+    APTXHD
+};
 
 /* state machine states */
 enum
@@ -179,6 +189,7 @@ static void bta_av_sco_chg_cback(tBTA_SYS_CONN_STATUS status, UINT8 id, UINT8
 static void bta_av_sys_rs_cback (tBTA_SYS_CONN_STATUS status,UINT8 id, UINT8 app_id, BD_ADDR peer_addr);
 
 static void bta_av_api_enable_multicast(tBTA_AV_DATA *p_data);
+static void bta_av_api_update_max_av_clients(tBTA_AV_DATA * p_data);
 
 /* action functions */
 const tBTA_AV_NSM_ACT bta_av_nsm_act[] =
@@ -202,6 +213,7 @@ const tBTA_AV_NSM_ACT bta_av_nsm_act[] =
 #endif
     bta_av_api_to_ssm,              /* BTA_AV_API_START_EVT */
     bta_av_api_to_ssm,              /* BTA_AV_API_STOP_EVT */
+    bta_av_api_update_max_av_clients,
     bta_av_api_enable_multicast,    /* BTA_AV_ENABLE_MULTICAST_EVT */
 };
 
@@ -683,17 +695,86 @@ static void bta_av_api_register(tBTA_AV_DATA *p_data)
                    (*bta_av_a2d_cos.init)(&codec_type, cs.cfg.codec_info,
                     &cs.cfg.num_protect, cs.cfg.protect_info, index) == TRUE)
             {
+                UINT8* ptr = cs.cfg.codec_info;
+                tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[BTA_AV_CFG_START_IDX];
+                UINT32 vendorId = codecInfo->vendorId;
+                UINT16 codecId = codecInfo->codecId;
+
+                if ((*bta_av_a2d_cos.offload)() ==  TRUE)
+                {
+                    if(codec_type == A2D_NON_A2DP_MEDIA_CT)
+                    {
+                       if (vendorId == A2D_APTX_VENDOR_ID &&
+                           codecId == A2D_APTX_CODEC_ID_BLUETOOTH)
+                       {
+                           if((*bta_av_a2d_cos.cap)(APTX) != TRUE)
+                           {
+                               APPL_TRACE_DEBUG("%s: aptx-Classic offload codec not supported",__func__);
+                               index++;
+                               continue;
+                           }
+                           else
+                               APPL_TRACE_DEBUG("%s:aptx-Classic offload codec supported",__func__)
+                       } else {
+                           if (codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH &&
+                                  vendorId == A2D_APTX_HD_VENDOR_ID ) {
+                               if((*bta_av_a2d_cos.cap)(APTXHD) != TRUE)
+                               {
+                                   APPL_TRACE_DEBUG("%s: aptx-HD offload codec not supported",__func__)
+                                   index++;
+                                   continue;
+                               }
+                               else
+                                   APPL_TRACE_DEBUG("%s: aptx-HD offload codec supported",__func__)
+
+                           }
+                       }
+                    }
+                    else if (codec_type == AAC)
+                    {
+                        if ((*bta_av_a2d_cos.cap)(AAC) != TRUE)
+                        {
+                            APPL_TRACE_DEBUG("%s: AAC offload codec not supported",__func__);
+                            index++;
+                            continue;
+                        } else {
+                            APPL_TRACE_DEBUG("%s: AAC offload codec supported",__func__);
+                        }
+                    }
+                } else if (codec_type == A2D_NON_A2DP_MEDIA_CT) {
+                    if ((codecId == A2D_APTX_CODEC_ID_BLUETOOTH && vendorId == A2D_APTX_VENDOR_ID)
+                        && (A2D_check_and_init_aptX() == false)) {
+                        APPL_TRACE_WARNING("%s aptX not available ", __func__);
+                        index++;
+                        continue;
+
+                    } else {
+                        char value[PROPERTY_VALUE_MAX];
+                        bool enableAptXHD = false;
+                        if (property_get("persist.bt.enableAptXHD", value, "false") && strcmp(value, "true") == 0)
+                            enableAptXHD = true;
+                        else
+                            APPL_TRACE_WARNING("%s enableAptXHD property is not set", __func__);
+
+                        if ((codecId == A2D_APTX_HD_CODEC_ID_BLUETOOTH && vendorId == A2D_APTX_HD_VENDOR_ID) &&
+                            ((enableAptXHD == false) || (A2D_check_and_init_aptX_HD() == false))) {
+                             APPL_TRACE_WARNING("%s aptX-HD not available", __func__);
+                             index++;
+                             continue;
+                        }
+                    }
+                } else if (codec_type == AAC) {
+                    //Don't add AAC in Non split mode
+                    index++;
+                    continue;
+                }
+
                 if(AVDT_CreateStream(&p_scb->seps[index - startIndex].av_handle, &cs) ==
                                                                             AVDT_SUCCESS)
                 {
                    if ((profile_initialized == UUID_SERVCLASS_AUDIO_SOURCE) &&
-                                        (index == BTIF_SV_AV_AA_APTX_INDEX))
+                       ((index == BTIF_SV_AV_AA_APTX_INDEX) || (index == BTIF_SV_AV_AA_APTX_HD_INDEX)))
                    {
-                       UINT8* ptr = cs.cfg.codec_info;
-                       tA2D_APTX_CIE* codecInfo = (tA2D_APTX_CIE*) &ptr[3];
-                       UINT8 vendorId = codecInfo->vendorId;
-                       UINT8 codecId = codecInfo->codecId;
-
                        p_scb->seps[index - startIndex].vendorId = vendorId;
                        p_scb->seps[index - startIndex].codecId = codecId;
                        APPL_TRACE_DEBUG("%s audio[%x] vendorId: %x codecId: %x", __func__,
@@ -806,6 +887,8 @@ static void bta_av_api_register(tBTA_AV_DATA *p_data)
 void bta_av_api_deregister(tBTA_AV_DATA *p_data)
 {
     tBTA_AV_SCB *p_scb = bta_av_hndl_to_scb(p_data->hdr.layer_specific);
+
+    A2D_close_aptX();
 
     if(p_scb)
     {
@@ -926,6 +1009,22 @@ static void bta_av_api_enable_multicast(tBTA_AV_DATA *p_data)
 {
     is_multicast_enabled = p_data->multicast_state.is_multicast_enabled;
     APPL_TRACE_DEBUG("is_multicast_enabled :%d", is_multicast_enabled);
+}
+
+/*******************************************************************************
+**
+** Function         bta_av_api_update_max_av_client
+**
+** Description      Update max simultaneous AV connections supported
+**
+** Returns          void
+**
+*******************************************************************************/
+static void bta_av_api_update_max_av_clients(tBTA_AV_DATA *p_data)
+{
+    int bta_av_max_clients = p_data->max_av_clients.max_clients;
+    APPL_TRACE_DEBUG("bta_av_max_clients:%d",bta_av_max_clients);
+    AVDT_UpdateMaxAvClients(bta_av_max_clients);
 }
 
 /*******************************************************************************

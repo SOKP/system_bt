@@ -33,6 +33,7 @@
 
 #include "bt_types.h"
 #include "bt_utils.h"
+#include "btif/include/btif_storage.h"
 #include "btm_ble_api.h"
 #include "btm_int.h"
 #include "btu.h"
@@ -50,6 +51,7 @@ extern void smp_link_encrypted(BD_ADDR bda, UINT8 encr_enable);
 extern BOOLEAN smp_proc_ltk_request(BD_ADDR bda);
 #endif
 extern void gatt_notify_enc_cmpl(BD_ADDR bd_addr);
+
 /*******************************************************************************/
 /* External Function to be called by other modules                             */
 /*******************************************************************************/
@@ -73,16 +75,11 @@ BOOLEAN BTM_SecAddBleDevice (BD_ADDR bd_addr, BD_NAME bd_name, tBT_DEVICE_TYPE d
                              tBLE_ADDR_TYPE addr_type)
 {
     BTM_TRACE_DEBUG ("%s: dev_type=0x%x", __func__, dev_type);
-    tBTM_SEC_DEV_REC  *p_dev_rec = btm_find_dev(bd_addr);
 
-    if (!p_dev_rec) {
-        if (list_length(btm_cb.sec_dev_rec) > BTM_SEC_MAX_DEVICE_RECORDS) {
-            BTM_TRACE_ERROR("%s: %d max devices reached!", __func__, BTM_SEC_MAX_DEVICE_RECORDS);
-            return FALSE;
-        }
-
-        p_dev_rec = osi_calloc(sizeof(tBTM_SEC_DEV_REC));
-        list_append(btm_cb.sec_dev_rec, p_dev_rec);
+    tBTM_SEC_DEV_REC *p_dev_rec = btm_find_dev(bd_addr);
+    if (!p_dev_rec)
+    {
+        p_dev_rec = btm_sec_allocate_dev_rec();
 
         memcpy(p_dev_rec->bd_addr, bd_addr, BD_ADDR_LEN);
         p_dev_rec->hci_handle = BTM_GetHCIConnHandle(bd_addr, BT_TRANSPORT_BR_EDR);
@@ -120,6 +117,37 @@ BOOLEAN BTM_SecAddBleDevice (BD_ADDR bd_addr, BD_NAME bd_name, tBT_DEVICE_TYPE d
     }
 
     return TRUE;
+}
+
+/*******************************************************************************
+**
+** Function         BTM_GetRemoteDeviceName
+**
+** Description      This function is called to get the dev name of remote device
+**                  from NV
+**
+** Returns          TRUE if success; otherwise failed.
+**
+*******************************************************************************/
+BOOLEAN BTM_GetRemoteDeviceName(BD_ADDR bda, BD_NAME bd_name)
+{
+    BTM_TRACE_DEBUG("%s", __func__);
+    BOOLEAN ret = FALSE;
+    bt_bdname_t bdname;
+    bt_property_t prop_name;
+    bt_bdaddr_t bd_addr;
+    bdcpy(bd_addr.address, bda);
+
+    BTIF_STORAGE_FILL_PROPERTY(&prop_name, BT_PROPERTY_BDNAME,
+                          sizeof(bt_bdname_t), &bdname);
+    if (btif_storage_get_remote_device_property(
+        &bd_addr, &prop_name) == BT_STATUS_SUCCESS)
+    {
+        APPL_TRACE_DEBUG("%s, NV name = %s", __func__, bdname.name);
+        strlcpy((char*) bd_name, (char*) bdname.name, BD_NAME_LEN);
+        ret = TRUE;
+    }
+    return ret;
 }
 
 /*******************************************************************************
@@ -2744,6 +2772,7 @@ void btm_ble_set_keep_rfu_in_auth_req(BOOLEAN keep_rfu)
     BTM_TRACE_DEBUG ("btm_ble_set_keep_rfu_in_auth_req keep_rfus=%d", keep_rfu);
     btm_cb.devcb.keep_rfu_in_auth_req = keep_rfu;
 }
+
 
 #endif /* BTM_BLE_CONFORMANCE_TESTING */
 

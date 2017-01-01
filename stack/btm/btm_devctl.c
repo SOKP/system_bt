@@ -226,6 +226,17 @@ void BTM_DeviceReset (UNUSED_ATTR tBTM_CMPL_CB *p_cb) {
   );
 }
 
+void BTM_HCI_Reset(void)
+{
+  /* Flush all ACL connections */
+  btm_acl_device_down();
+
+  /* Clear the callback, so application would not hang on reset */
+  btm_db_reset();
+
+  btsnd_hcic_reset(LOCAL_BR_EDR_CONTROLLER_ID);
+}
+
 /*******************************************************************************
 **
 ** Function         BTM_IsDeviceUp
@@ -424,6 +435,11 @@ static void btm_decode_ext_features_page (UINT8 page_number, const UINT8 *p_feat
     /* Extended Page 2 */
     case HCI_EXT_FEATURES_PAGE_2:
         /* Nothing to do for page 2 */
+        break;
+
+    /* Extended Page 3 */
+    case HCI_EXT_FEATURES_PAGE_3:
+        /* Nothing to do for page 3 */
         break;
 
     default:

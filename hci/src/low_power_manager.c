@@ -127,7 +127,7 @@ static void wake_assert() {
 
 static void transmit_done() {
   transmit_is_done = true;
-  if (wake_state == LPM_WAKE_W4_TX_DONE) {
+  if (wake_state == LPM_WAKE_W4_TX_DONE || wake_state == LPM_WAKE_ASSERTED) {
     wake_state = LPM_WAKE_W4_TIMEOUT;
     start_idle_timer(true);
   }
@@ -137,15 +137,17 @@ static void transmit_done() {
 
 static void enable(bool enable) {
   if (state == LPM_DISABLING) {
-    if (enable)
+    if (enable) {
       LOG_ERROR(LOG_TAG, "%s still processing prior disable request, cannot enable.", __func__);
-    else
+    } else {
       LOG_WARN(LOG_TAG, "%s still processing prior disable request, ignoring new request to disable.", __func__);
+    }
   } else if (state == LPM_ENABLING) {
-    if (enable)
+    if (enable) {
       LOG_ERROR(LOG_TAG, "%s still processing prior enable request, ignoring new request to enable.", __func__);
-    else
+    } else {
       LOG_WARN(LOG_TAG, "%s still processing prior enable request, cannot disable.", __func__);
+    }
   } else if (state == LPM_ENABLED && enable) {
     LOG_INFO(LOG_TAG, "%s already enabled.", __func__);
   } else if (state == LPM_DISABLED && !enable) {
@@ -194,15 +196,18 @@ void start_idle_timer(bool check_LPM) {
   if (state == LPM_ENABLED || !check_LPM) {
     if (idle_timeout_ms == 0) {
        wake_deassert();
-    } else {
+    }
+    else {
        alarm_set(idle_alarm, idle_timeout_ms, idle_timer_expired, NULL);
     }
+
+    LOG_VERBOSE(LOG_TAG,"%s check_LPM = %d", __func__, check_LPM);
   }
 }
 
 void stop_idle_timer() {
   alarm_cancel(idle_alarm);
-  LOG_DEBUG("%s", __func__);
+  LOG_VERBOSE(LOG_TAG, "%s", __func__);
 }
 
 static void event_disable(UNUSED_ATTR void *context) {

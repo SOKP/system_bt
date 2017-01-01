@@ -490,6 +490,7 @@ static void bta_dm_sys_hw_cback( tBTA_SYS_HW_EVT status )
 void bta_dm_disable (tBTA_DM_MSG *p_data)
 {
     UNUSED(p_data);
+    int soc_type = get_soc_type();
 
     /* Set l2cap idle timeout to 0 (so BTE immediately disconnects ACL link after last channel is closed) */
     L2CA_SetIdleTimeoutByBdAddr((UINT8 *)BT_BD_ANY, 0, BT_TRANSPORT_BR_EDR);
@@ -509,11 +510,17 @@ void bta_dm_disable (tBTA_DM_MSG *p_data)
     BTM_BleClearBgConnDev();
 #endif
 
-#ifdef QLOGKIT_USERDEBUG
     /* Disable SOC Logging */
-    UINT8       param[5] = {0x10,0x02,0x00,0x00,0x01};
-    BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE,5,param,NULL);
-#endif
+    if (soc_type == BT_SOC_SMD)
+    {
+        UINT8       param[5] = {0x10, 0x02, 0x00, 0x00, 0x01};
+        BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE, 5, param, NULL);
+    }
+    else if (soc_type == BT_SOC_CHEROKEE)
+    {
+        UINT8       param_cherokee[2] = {0x14, 0x00};
+        BTM_VendorSpecificCommand(HCI_VS_HOST_LOG_OPCODE, 2, param_cherokee, NULL);
+    }
 
     if(BTM_GetNumAclLinks()==0)
     {
@@ -3315,9 +3322,12 @@ void bta_dm_acl_change(tBTA_DM_MSG *p_data)
         {
             if (bta_dm_cb.device_list.count < BTA_DM_NUM_PEER_DEVICE)
             {
+                /* new acl connection,reset new peer device */
+                memset(&bta_dm_cb.device_list.peer_device[i], 0, sizeof(bta_dm_cb.device_list.peer_device[i]));
                 bdcpy(bta_dm_cb.device_list.peer_device[bta_dm_cb.device_list.count].peer_bdaddr, p_bda);
                 bta_dm_cb.device_list.peer_device[bta_dm_cb.device_list.count].link_policy = bta_dm_cb.cur_policy;
                 bta_dm_cb.device_list.count++;
+                APPL_TRACE_ERROR("%s new acl connetion:count = %d", __func__, bta_dm_cb.device_list.count);
 #if BLE_INCLUDED == TRUE
                 bta_dm_cb.device_list.peer_device[i].conn_handle = p_data->acl_change.handle;
                 if (p_data->acl_change.transport == BT_TRANSPORT_LE)
@@ -3368,10 +3378,12 @@ void bta_dm_acl_change(tBTA_DM_MSG *p_data)
 
             conn.link_down.is_removed = bta_dm_cb.device_list.peer_device[i].remove_dev_pending;
 
-            for(; i<bta_dm_cb.device_list.count ; i++)
+            /* acl disconnection,remove peer device entry and reset last entry */
+            for(; i < (bta_dm_cb.device_list.count - 1); i++)
             {
                 memcpy(&bta_dm_cb.device_list.peer_device[i], &bta_dm_cb.device_list.peer_device[i+1], sizeof(bta_dm_cb.device_list.peer_device[i]));
             }
+            memset(&bta_dm_cb.device_list.peer_device[i], 0, sizeof(bta_dm_cb.device_list.peer_device[i]));
             break;
         }
         if(bta_dm_cb.device_list.count)
@@ -3586,24 +3598,19 @@ static void bta_dm_reset_sec_dev_pending(BD_ADDR remote_bd_addr)
 *******************************************************************************/
 static void bta_dm_remove_sec_dev_entry(BD_ADDR remote_bd_addr)
 {
-    UINT16 index = 0;
     if ( BTM_IsAclConnectionUp(remote_bd_addr, BT_TRANSPORT_LE) ||
          BTM_IsAclConnectionUp(remote_bd_addr, BT_TRANSPORT_BR_EDR))
     {
-         APPL_TRACE_DEBUG("%s ACL is not down. Schedule for  Dev Removal when ACL closes",
-                            __FUNCTION__);
-        for (index = 0; index < bta_dm_cb.device_list.count; index ++)
+        APPL_TRACE_DEBUG("%s ACL is not down. Schedule for  Dev Removal when ACL closes",
+                            __func__);
+        BTM_SecClearSecurityFlags (remote_bd_addr);
+        for (int i = 0; i < bta_dm_cb.device_list.count; i++)
         {
-            if (!bdcmp( bta_dm_cb.device_list.peer_device[index].peer_bdaddr, remote_bd_addr))
+            if (!bdcmp( bta_dm_cb.device_list.peer_device[i].peer_bdaddr, remote_bd_addr))
+            {
+                bta_dm_cb.device_list.peer_device[i].remove_dev_pending = TRUE;
                 break;
-        }
-        if (index != bta_dm_cb.device_list.count)
-        {
-            bta_dm_cb.device_list.peer_device[index].remove_dev_pending = TRUE;
-        }
-        else
-        {
-            APPL_TRACE_ERROR(" %s Device does not exist in DB", __FUNCTION__);
+            }
         }
     }
     else
